@@ -1,0 +1,211 @@
+{
+  "name": "Reservation Agent (Nexium Phase 3)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "reservation-agent",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-reservation-agent",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "nexium-reservation-agent"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+              "name": "user_message",
+              "value": "={{ $json.body && $json.body.user_message ? $json.body.user_message : $json.user_message }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "normalize-webhook-input",
+      "name": "Normalize input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [140, 0]
+    },
+    {
+      "parameters": {
+        "agent": "toolsAgent",
+        "promptType": "define",
+        "text": "={{ $json.user_message }}",
+        "hasOutputParser": false,
+        "options": {
+          "systemMessage": "={{ \"You are a warm, concise restaurant reservation assistant for Nexium.\\n\\nBOOKING — Users may send EVERYTHING IN ONE MESSAGE (name, email, phone, party size, date/time). Extract: full name, email, phone, party_size (integer), preferred_date as YYYY-MM-DD. If they say today or today at 8pm, use today's ISO date for preferred_date. The API stores the day only; you may mention their preferred time in your reply but preferred_date must be YYYY-MM-DD.\\n\\nWhen you have all five fields, call create_reservation EXACTLY ONCE. Never call it twice for the same booking.\\n\\nAFTER create_reservation RETURNS — The tool response body is JSON. If success is true, read data.confirmation_code from the JSON and reply in ONE short message that MUST show the confirmation code verbatim (for example: Your confirmation code is: CODE123). You may add restaurant or table from data if present. Then output ONLY that text — no more tools.\\n\\nCANCELLATION — If the user wants to cancel and provides a confirmation code (alphanumeric, often 8 characters), call cancel_reservation EXACTLY ONCE with that code. Never call cancel_reservation twice for the same request. Never call create_reservation when cancelling.\\n\\nAFTER cancel_reservation RETURNS — The response is JSON: success, message, and if success is true, data.confirmation_code and data.status (e.g. cancelled). Reply in ONE short plain-text message confirming the cancellation (you may quote the code). Your VERY NEXT turn must be that message only — NO further tool calls, NO second cancel_reservation, NO create_reservation. Then the task is done.\\n\\nIf cancel returns success false (not found, already cancelled, etc.), explain using the API message field briefly and STOP — do not retry the same code unless the user corrects it.\\n\\nCRITICAL — ONE TOOL THEN DONE: For both booking and cancel, pattern is: at most one relevant tool call, then exactly one final assistant message with no tools.\\n\\nIf something is still missing from the user's message, ask one short follow-up question only (no tools until they answer).\\n\\nToday (ISO date): \" + $now.toISODate() }}",
+          "maxIterations": 4
+        }
+      },
+      "id": "ai-agent-main",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.9,
+      "position": [280, 0]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-1.5-flash",
+        "options": {}
+      },
+      "id": "lm-gemini-flash",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [280, 220]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Creates ONE reservation via the restaurant API. Call only once you have name, email, phone, party_size, preferred_date (YYYY-MM-DD). The JSON response includes success and data.confirmation_code on success. After a successful call, read data.confirmation_code and reply to the user — do not call this tool again.",
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/reservations",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Content-Type\": \"application/json\",\n  \"Accept\": \"application/json\"\n}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"name\": \"{name}\",\n  \"email\": \"{email}\",\n  \"phone\": \"{phone}\",\n  \"party_size\": \"{party_size}\",\n  \"preferred_date\": \"{preferred_date}\"\n}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "name",
+              "description": "Customer full name",
+              "type": "string"
+            },
+            {
+              "name": "email",
+              "description": "Customer email address",
+              "type": "string"
+            },
+            {
+              "name": "phone",
+              "description": "Customer phone number with country code if possible",
+              "type": "string"
+            },
+            {
+              "name": "party_size",
+              "description": "Number of guests (integer)",
+              "type": "number"
+            },
+            {
+              "name": "preferred_date",
+              "description": "Reservation date in YYYY-MM-DD format",
+              "type": "string"
+            }
+          ]
+        },
+        "optimizeResponse": false
+      },
+      "id": "tool-create-reservation",
+      "name": "create_reservation",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [520, 100]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Cancels ONE reservation via DELETE to the API. Call EXACTLY ONCE when the user gives their confirmation_code. Response JSON: success, message; on success also data.confirmation_code and data.status. After you see success true, write one plain-text reply to the user and STOP — do not call this tool again or call create_reservation in the same turn.",
+        "method": "DELETE",
+        "url": "http://127.0.0.1:8000/api/reservations/{confirmation_code}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Accept\": \"application/json\"\n}",
+        "sendBody": false,
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "confirmation_code",
+              "description": "8-character reservation confirmation code",
+              "type": "string"
+            }
+          ]
+        },
+        "optimizeResponse": false
+      },
+      "id": "tool-cancel-reservation",
+      "name": "cancel_reservation",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize input": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "create_reservation": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cancel_reservation": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
